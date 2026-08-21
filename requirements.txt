@@ -1,0 +1,21 @@
+pdf2docx
+
+# Not published on PyPI under this name despite the README — install from git.
+git+https://github.com/knowledgestack/excel-parser.git
+
+# Heavy: paddleocr + paddlepaddle pull in ~1-2 GB of packages and download
+# OCR models (~a few hundred MB) on first use. Worth it for real scanned
+# documents — see scripts/ocr_document.py.
+paddleocr
+paddlepaddle
+
+# Table-structure recognition (TableRecognitionPipelineV2) and layout
+# detection (seal/table region classification) need paddlex's OCR extras —
+# not pulled in by plain `paddleocr`. Downloads ~10 additional model files
+# (table structure/cell-detection models, a few hundred MB) on first use of
+# a document with a detected table region — see _ocr_common.py.
+paddlex[ocr]==3.7.2
+
+# .xlsx reconstruction output (ocr_layout_to_xlsx.py) — already pulled in
+# transitively by paddlex, listed explicitly since we depend on it directly.
+openpyxl

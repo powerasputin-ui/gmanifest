@@ -1,0 +1,368 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===================== CORE: DOCUMENTS =====================
+
+model Document {
+  id           String   @id @default(cuid())
+  fileName     String
+  fileType     String
+  fileSize     Int
+  filePath     String
+  status       String   @default("uploaded")
+  markdown     String?
+  pageCount    Int?
+  metadata     String?
+
+  classificationType        String?
+  classificationConfidence  Float?
+
+  projectId    String?
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  extractionRuns    ExtractionRun[]
+  projectDocuments  ProjectDocument[]
+}
+
+// ===================== EXTRACTION PROFILES =====================
+// Now entity-centric: extracts entities, not document types
+
+model ExtractionProfile {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  entityType  String   // Company, Vessel, Personnel, Well, Operation, Equipment, Permit, etc.
+  jsonSchema  String
+  promptTemplate String
+  validationRules String?
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  extractionRuns ExtractionRun[]
+}
+
+// ===================== EXTRACTION RUNS =====================
+
+model ExtractionRun {
+  id              String   @id @default(cuid())
+  documentId      String
+  profileId       String
+  status          String   @default("pending")
+  rawLlmResponse  String?
+  processedResult String?
+  errorMessage    String?
+  processingTime  Float?
+  modelUsed       String?
+  tokensUsed      Int?
+  costUsd         Float?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  document  Document         @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  profile   ExtractionProfile @relation(fields: [profileId], references: [id])
+  fields    ExtractedField[]
+  corrections Correction[]
+}
+
+// ===================== EXTRACTED FIELDS =====================
+
+model ExtractedField {
+  id          String  @id @default(cuid())
+  runId       String
+  fieldName   String
+  value       String?
+  confidence  Float?
+  page        Int?
+  bboxX       Float?
+  bboxY       Float?
+  bboxW       Float?
+  bboxH       Float?
+  sourceText  String?
+  isValid     Boolean?
+  validationError String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  run         ExtractionRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+}
+
+// ===================== CORRECTIONS =====================
+
+model Correction {
+  id              String   @id @default(cuid())
+  runId           String
+  fieldName       String
+  originalValue   String?
+  correctedValue  String?
+  originalMarkdown String?
+  llmResponse     String?
+  correctedJson   String?
+  correctedBy     String?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  run             ExtractionRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+}
+
+// ===================== SETTINGS =====================
+
+model Settings {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+  category String @default("general")
+  description String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ===================== PROJECTS (Unified Data Model + Memory) =====================
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  status      String   @default("draft") // draft, active, review, completed, archived
+  clientName  String?
+  contractorName String?
+  stage       String?
+  context     String?  // JSON: project context memory — accumulated knowledge
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  documents   ProjectDocument[]
+  entities    ProjectEntity[]
+  generations DocumentGeneration[]
+  workflows   Workflow[]
+}
+
+model ProjectDocument {
+  id         String @id @default(cuid())
+  projectId  String
+  documentId String
+
+  createdAt  DateTime @default(now())
+
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, documentId])
+}
+
+// Flexible entity storage — expanded for Gazprom Shelfproject
+model ProjectEntity {
+  id         String   @id @default(cuid())
+  projectId  String
+  entityType String   // Expanded: Company, Vessel, Personnel, Well, Operation, Equipment, Permit, Incident, Weather, Contract, Location, Port, Rig, Campaign, Task, Risk, WorkOrder, Checklist, OrganizationRole, FinancialData
+  instanceId String   // e.g. "company_1", "vessel_2" for multiple instances
+  fieldName  String
+  value      String?
+  sourceDocumentId String?
+  sourceRunId     String?
+  page       Int?
+  confidence Float?
+  isVerified Boolean @default(false)
+  isPreferred Boolean @default(false)
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, entityType])
+  @@index([projectId, entityType, instanceId])
+}
+
+// ===================== TEMPLATES =====================
+
+model DocumentTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  fileType    String
+  filePath    String
+  fileName    String
+  variables   String?  // JSON: list of {{var}} found in template
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  mappings    TemplateMapping[]
+  generations DocumentGeneration[]
+}
+
+model TemplateMapping {
+  id               String   @id @default(cuid())
+  templateId       String
+  templateVariable String
+  modelPath        String
+  autoDetected     Boolean  @default(false)
+  confirmed        Boolean  @default(false)
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  template          DocumentTemplate   @relation(fields: [templateId], references: [id], onDelete: Cascade)
+}
+
+// ===================== DOCUMENT GENERATIONS =====================
+
+model DocumentGeneration {
+  id               String   @id @default(cuid())
+  projectId        String
+  templateId       String
+  workflowId       String?  // Which workflow triggered this generation
+  status           String   @default("pending") // pending, generating, completed, error
+  outputFilePath    String?
+  outputFileName   String?
+  valuesUsed       String?
+  errors           String?
+  generatedBy      String?
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  project           Project          @relation(fields: [projectId], references: [id])
+  template          DocumentTemplate  @relation(fields: [templateId], references: [id])
+  workflow          Workflow?         @relation(fields: [workflowId], references: [id])
+  sourceDocuments   GenerationSource[]
+}
+
+model GenerationSource {
+  id               String @id @default(cuid())
+  generationId     String
+  documentId       String
+  documentFileName String
+
+  createdAt         DateTime @default(now())
+
+  generation        DocumentGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade)
+}
+
+// ===================== WORKFLOW TEMPLATES =====================
+// Predefined business process definitions for Gazprom Shelfproject
+
+model WorkflowTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  category    String   // commercial, operational, hse, mobilization, reporting, contracting
+  icon        String?  // lucide icon name for UI
+  color       String?  // accent color for UI (e.g. "emerald", "amber")
+  isActive    Boolean  @default(true)
+
+  // What this workflow process needs
+  requiredEntityTypes String? // JSON array: ["Company", "FinancialData", "Contract"]
+  requiredDocumentTypes String? // JSON array: ["contract", "invoice", "specification"]
+  outputTemplates String? // JSON array of template IDs this workflow can produce
+
+  // Default step definitions
+  defaultSteps String? // JSON: ordered step definitions for this workflow type
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workflows   Workflow[]
+  rules       BusinessRule[]
+}
+
+// ===================== BUSINESS RULES =====================
+// Conditional logic: when X, require Y, extract Z
+
+model BusinessRule {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  workflowTemplateId String?
+
+  // When this rule triggers
+  triggerType String   // document_type, entity_present, workflow_step, always
+  triggerCondition String? // JSON: { "documentType": "daily_report" } or { "entityType": "Permit" }
+
+  // What the rule requires
+  requiredEntities String?  // JSON: ["Weather", "Operations", "Personnel"]
+  requiredDocuments String? // JSON: ["weather_report", "risk_assessment", "jsa"]
+
+  // What the rule auto-extracts
+  autoExtractEntities String? // JSON: ["Weather", "Operations"]
+
+  // Validation
+  validationLogic String? // JSON: [{ "field": "Weather.date", "rule": "required" }]
+
+  priority    Int      @default(0)
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workflowTemplate WorkflowTemplate? @relation(fields: [workflowTemplateId], references: [id])
+}
+
+// ===================== WORKFLOWS (Instance) =====================
+// The core entity — a running business process
+
+model Workflow {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  templateId  String?  // Which template this workflow is based on
+  projectId   String?
+  status      String   @default("draft") // draft, planning, in_progress, review, completed, cancelled
+  currentStep Int      @default(0)
+  
+  // Workflow-level data
+  dataRequirements String? // JSON: computed list of what this workflow needs
+  dataCompleteness Float?  @default(0) // 0-100% of required data filled
+  errors       String?  // JSON array of errors/warnings
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  steps       WorkflowStep[]
+  project     Project?        @relation(fields: [projectId], references: [id])
+  template    WorkflowTemplate? @relation(fields: [templateId], references: [id])
+  generations DocumentGeneration[]
+}
+
+model WorkflowStep {
+  id          String   @id @default(cuid())
+  workflowId  String
+  stepOrder   Int
+  name        String
+  description String?
+  stepType    String   // define_goal, identify_data, find_documents, extract, check_completeness, fill_template, user_review, export
+  status      String   @default("pending") // pending, in_progress, completed, skipped, blocked
+  
+  // What this step needs
+  requiredEntities String?    // JSON: ["Company", "FinancialData"]
+  requiredDocuments String?   // JSON: ["contract", "invoice"]
+  requiredTemplates String?   // JSON: ["template_id_1"]
+  
+  // What this step produces
+  outputData String?  // JSON: step output / intermediate results
+  
+  // Completeness tracking
+  missingItems String? // JSON: ["Weather data for 15.01.2025 is missing"]
+  templateId  String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workflow    Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+}
